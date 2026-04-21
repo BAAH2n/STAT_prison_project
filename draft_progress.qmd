@@ -1,0 +1,241 @@
+---
+title: "Проміжний звіт проєкту"
+subtitle: "Описова статистика — груповий проєкт"
+author:
+  - name: "Команда «Severus Floid-Snape»"
+  - name: "Склад: N. Sivirin, S. Danilova, A. Hanhalo, O. Zhelezniakov"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    embed-resources: true
+editor: visual
+---
+
+# Тема та датасет
+
+Ми обрали для дослідження датасет **Incarceration Trends** (Vera Institute of Justice) — дані про ув'язнення в США за штатами та округами протягом багатьох років. 
+
+Додатково використовуємо допоміжні файли (підготовлені зрізи основного датасету):
+
+-   `prison_population.csv` — населення в'язниць по штатах;
+-   `prison_summary.csv` — узагальнені категорії;
+-   `pretrial_population.csv` — особи під досудовим триманням.
+
+# Дослідницькі запитання
+
+У межах проєкту ми плануємо дослідити три пов'язані запитання:
+
+**1. Перевантаженість в'язниць: системна проблема чи локальна криза?**\
+У в'язниць і тюрем (jails & prisons) є офіційно встановлена максимальна місткість. Які штати хронічно тримають свої установи заповненими вище 100% від цієї місткості, і чи погіршується ситуація з часом?
+
+**2. Що насправді жене зростання популяції місцевих в'язниць (jails)?**\
+Чи зумовлене це зростання людьми, які фактично відбувають покарання, чи людьми, які застрягли в досудовому триманні (юридично невинними, але неспроможними сплатити заставу)? Чи відрізняється ця картина між глибокою сільською місцевістю та великими містами?
+
+**3. Чи географія диктує ув'язнення? (Urban vs. Rural)**\
+Історично популяцію в'язниць «гнали» великі міста, але останніми роками головними драйверами росту стають сільські та приміські округи. Ця візуалізація має валідувати (або спростувати) такий зсув.
+
+Супутні підпитання:
+
+-   Як географічно розподілене населення в'язниць і досудове ув'язнення по штатах?
+-   Які штати хронічно перевищують 100% проєктної місткості установ?
+-   Чи погіршується ситуація із заповненістю з роками?
+-   Як співвідносяться частки «sentenced» та «pretrial» у різних типах округів (urban / suburban / rural)?
+
+# Гіпотези
+
+Гіпотези ми плануємо сформулювати на наступному тижні — на основі дослідницьких запитань вище.
+
+# Що вже зроблено
+
+## Частина 1 — перевантаженість 
+
+Підготували дані й побудували пілотну картограму **заповненості в'язниць за штатами** (коефіцієнт `population / capacity`). Відповідає на запитання №1 — про перевантаженість.
+
+```{r}
+#| message: false
+#| warning: false
+#| eval: false
+library(tidyverse)
+library(readr)
+library(sf)
+library(tigris)
+library(plotly)
+library(scales)
+library(dplyr)
+
+trends <- read_csv("incarceration_trends.csv")
+
+trends |>
+  summary()
+
+trends |>
+  head()
+trends |>
+  select(capacity, total_jail_pop) |>
+  summary()
+#Overcrowding Heatmaps: Systemic failure or localized crisis?
+#ails and prisons have a maximum rated capacity. Which states are chronically
+#running their facilities over 100% capacity, and is it getting worse over time?
+
+#prepare the data
+heatmap_data <- trends |>
+  filter(year >= 2006) |>
+  filter(!is.na(total_jail_pop) & !is.na(capacity)) |>
+  group_by(state, year) |>
+  summarize(state_jail_pop = sum(total_jail_pop, na.rm = TRUE),
+            state_jail_capacity = sum(capacity, na.rm = TRUE)) |>
+  mutate(usage_rate = state_jail_pop / state_jail_capacity)
+
+
+
+#tooltip
+heatmap_data <- heatmap_data |>
+  mutate(
+tooltip_text = paste0(
+  "Штат: ", state, "\n",
+  "Заповненість: ", percent(usage_rate, accuracy = 0.1), "\n",
+  "Ув'язнених: ", comma(state_jail_pop), "\n",
+  "Місць: ", comma(state_jail_capacity)
+))
+
+#downloading the shapefiles
+us_states <- sf::st_read("cb_2018_us_state_500k.shp")
+
+#join the data with the shapefiles
+
+heatmap <- us_states |>
+  left_join(heatmap_data, by = c("STUSPS" = "state"))
+
+#let's try to do only one-year observation
+
+heatmap |>
+  ggplot(aes(fill = usage_rate)) +
+  geom_sf(color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkred", na.value = "grey90") +
+  labs(title = "Заповненість в'язниць за штатами 2006",
+       fill = "Заповненість") +
+  theme_void() +
+  theme(legend.position = "bottom")
+#okay... it can be better, well I still have a few days to nail it)
+```
+
+## Частина 2 — населення в'язниць та досудове тримання 
+
+Побудували картограми **кількості ув'язнених у в'язницях США** (запитання №2 і №3) та **кількості осіб під досудовим триманням** (запитання №2 — sentenced vs. pretrial).
+
+```{r}
+#| message: false
+#| warning: false
+#| eval: false
+library(showtext)
+library(sysfonts)
+library(maps)
+#Data load
+prison_population_df <- read_csv("prison_population.csv")
+prison_summary_df <- read_csv("prison_summary.csv")
+pretrial_population_df <- read_csv("pretrial_population.csv")
+
+states_map <- map_data("state")
+#Data explore
+prison_population_df |>
+  filter(!is.na(prison_population)) |>
+  select(prison_population)
+
+prison_population_df |>
+  count(state) |>
+  head(51)
+
+prison_population_df |> select(state)
+
+prison_summary_df |> select(pop_category)
+
+prison_population_df |>
+  filter(!is.na(prison_population)) |>
+  select(prison_population)
+# Change state names
+states_map <- as_tibble(states_map)
+
+prison_population_df <- prison_population_df |>
+  mutate(state = tolower(state.name[match(state, state.abb)]))
+
+pretrial_population_df <- pretrial_population_df |>
+  mutate(state = tolower(state.name[match(state, state.abb)]))
+# Check why not all states in graph. And other problems with states
+
+states_map_count_state <- states_map |>
+  count(region)
+
+pretrial_population_df |> select(state)
+
+prison_population_df_count_state <-prison_population_df |>
+  filter(!is.na(prison_population)) |>
+  count(state)
+
+states_map_count_state |>
+  inner_join(prison_population_df_count_state, by = c("region" = "state"))
+
+prison_population_df |>
+  filter(!is.na(prison_population)) |>
+  filter(prison_population == 0) |>
+  count(state)
+# Visualization
+font_add_google("Roboto", "roboto")
+
+showtext_auto()
+#  Map cart of prison population
+
+prison_population_df |>
+  filter(!is.na(prison_population)) |>
+  ggplot(aes(map_id = state)) +
+  geom_map(aes(fill = prison_population), map = states_map) +
+  expand_limits(x = states_map$long, y = states_map$lat) +
+  scale_fill_distiller(palette = "Blues",  direction = 1,
+                       trans = "log10") +
+  labs(title = "Amount of prisoners in US",
+       fill = "Prison Population") +
+  theme_linedraw() +
+  theme(plot.title = element_text(hjust = 0.5, size = 22, face = "bold"),
+        panel.background = element_rect(fill = "grey90"),
+        legend.background = element_rect(fill = "grey75",
+                                         colour = "black",
+                                         size = 1,
+                                         linetype = "solid"),
+        text = element_text(family = "roboto"))
+
+# Map cart of prison population
+pretrial_population_df |>
+  filter(!is.na(pretrial_population)) |>
+  ggplot(aes(map_id = state)) +
+  geom_map(aes(fill = pretrial_population), map = states_map) +
+  expand_limits(x = states_map$long, y = states_map$lat) +
+  scale_fill_distiller(palette = "Blues",  direction = 1,
+                       trans = "log10") +
+  labs(title = "Amount of pretrials in US",
+         fill = "Pretrial Population") +
+  theme(plot.title = element_text(hjust = 0.5, size = 22, face = "bold"),
+        panel.background = element_rect(fill = "grey90"),
+        legend.background = element_rect(fill = "grey75",
+                                         colour = "black",
+                                         size = 1,
+                                         linetype = "solid"),
+        text = element_text(family = "roboto"),
+        axis.ticks = element_blank())
+
+prison_population_df |>
+  inner_join(states_map, by = c("state" = "region"))
+```
+
+# Плани на наступний тиждень
+
+-   Сформулювати гіпотези 
+-   Поліпшити картограму заповненості та зробити версію з динамікою по роках, а не лише на один рік
+-   Додати інтерактивність 
+-   Описати штати
+-   Покращити візуал
+-   **Плідно працювати**
+
+
